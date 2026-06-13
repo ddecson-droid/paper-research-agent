@@ -1,11 +1,10 @@
-"""Streamlit 前端 - 论文研究助手"""
+"""Streamlit 前端 - 论文研究助手（增强检索版）"""
 import sys, os, io, json, time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import streamlit as st
 from backend.agents.pipeline import ResearchPipeline
-from backend.tools.arxiv_tool import search_arxiv
 
 st.set_page_config(page_title="多Agent学术论文研究助手", page_icon="📚", layout="wide")
 
@@ -18,11 +17,11 @@ with st.sidebar:
 
     st.divider()
     st.caption("4 Agent 协作：检索 → 分析 → 对比 → 撰写")
-    st.caption("支持 arxiv 实时搜索")
+    st.caption("多源检索 + 质量评分：Semantic Scholar + arxiv")
 
 # ---- 主页面 ----
 st.title("📚 多Agent学术论文研究助手")
-st.caption("输入研究方向，4个专业Agent自动协作，生成结构化文献综述")
+st.caption("输入研究方向，多源检索 + 4个专业Agent自动协作，生成结构化文献综述")
 
 if not submit or not topic.strip():
     st.info('👈 在左侧输入研究方向，点击「开始研究」')
@@ -49,8 +48,8 @@ if submit and topic.strip():
     tab1, tab2, tab3, tab4 = st.tabs(["📖 论文检索", "🔍 深度分析", "⚖️ 对比", "📝 综述报告"])
 
     with tab1:
-        with st.spinner("Agent 1/4: 检索论文中..."):
-            papers = search_arxiv(topic, max_results=8)
+        with st.spinner("Agent 1/4: 多源检索 + 质量评分中（Semantic Scholar + arxiv）..."):
+            papers = pipeline.search_engine.search(topic, max_results=8)
             retrieval = pipeline.retriever.run(topic, papers)
 
         st.subheader(f"检索到 {len(papers)} 篇论文")
@@ -60,9 +59,40 @@ if submit and topic.strip():
             with st.expander(f"[{i+1}] {p['title']}"):
                 st.write(f"**作者**: {', '.join(p.get('authors',[])[:5])}")
                 st.write(f"**年份**: {p.get('year','')}")
+
+                # 引用量
+                cites = p.get('citation_count', 0)
+                if cites:
+                    cite_str = f"{cites:,}"
+                    inf = p.get('influential_citation_count')
+                    if inf:
+                        cite_str += f"（高影响力: {inf:,}）"
+                    st.write(f"**引用量**: {cite_str}")
+
+                # venue / journal
+                venue = p.get('venue', '') or p.get('journal', '')
+                if venue:
+                    st.write(f"**发表venue**: {venue}")
+
+                # 综合评分
+                score = p.get('score')
+                if score is not None:
+                    st.write(f"**综合评分**: {score:.2f}")
+
+                # 来源
+                source_label = {
+                    "semantic_scholar": "Semantic Scholar",
+                    "arxiv": "arXiv",
+                    "fallback": "离线数据库",
+                }.get(p.get('source', ''), p.get('source', ''))
+                if source_label:
+                    st.write(f"**来源**: {source_label}")
+
                 st.write(f"**摘要**: {p.get('summary','')[:500]}")
                 if p.get("url"):
-                    st.write(f"[arxiv 链接]({p['url']})")
+                    st.write(f"[链接]({p['url']})")
+                if p.get("pdf_url"):
+                    st.write(f"[PDF]({p['pdf_url']})")
 
     # ---- Tab 2: 分析 ----
     with tab2:
@@ -72,7 +102,10 @@ if submit and topic.strip():
                 st.write(f"**分析论文 {i+1}/{min(5,len(papers))}**: {p['title'][:80]}...")
                 paper_text = (
                     f"标题: {p['title']}\n作者: {', '.join(p.get('authors',[])[:3])}\n"
-                    f"年份: {p.get('year','')}\n摘要: {p.get('summary','')}"
+                    f"年份: {p.get('year','')}\n"
+                    f"引用量: {p.get('citation_count', 'N/A')}\n"
+                    f"发表venue: {p.get('venue', '') or p.get('journal', 'N/A')}\n"
+                    f"摘要: {p.get('summary','')}"
                 )
                 analysis = pipeline.analyzer.run(paper_text)
                 analyses_parts.append(f"--- 论文{i+1} ---\n{analysis}")

@@ -1,17 +1,18 @@
-"""多Agent研究流水线——串联4个Agent"""
+"""多Agent研究流水线——串联4个Agent（增强检索版）"""
 import time
 from typing import Iterator
 from .retriever import RetrieverAgent
 from .analyzer import AnalyzerAgent
 from .comparator import ComparatorAgent
 from .writer import WriterAgent
-from ..tools.arxiv_tool import search_arxiv
+from ..tools.paper_search_engine import PaperSearchEngine
 
 
 class ResearchPipeline:
-    """4 Agent 研究流水线"""
+    """4 Agent 研究流水线（多源检索 + 质量评分）"""
 
     def __init__(self):
+        self.search_engine = PaperSearchEngine()
         self.retriever = RetrieverAgent()
         self.analyzer = AnalyzerAgent()
         self.comparator = ComparatorAgent()
@@ -29,21 +30,24 @@ class ResearchPipeline:
         }
         t0 = time.time()
 
-        # Step 1: 检索论文
+        # Step 1: 多源检索 + 质量评分（Semantic Scholar + arxiv）
         t1 = time.time()
-        papers = search_arxiv(topic, max_results=8)
+        papers = self.search_engine.search(topic, max_results=10)
         result["papers"] = papers
         retrieval_text = self.retriever.run(topic, papers)
         result["agent_times"]["retriever"] = time.time() - t1
 
-        # Step 2: 逐篇分析
+        # Step 2: 逐篇分析（最多5篇）
         t2 = time.time()
         analyses = []
-        for i, paper in enumerate(papers[:5]):  # 最多分析5篇
+        for i, paper in enumerate(papers[:5]):
             paper_text = (
                 f"标题: {paper.get('title','')}\n"
                 f"作者: {', '.join(paper.get('authors',[])[:3])}\n"
                 f"年份: {paper.get('year','')}\n"
+                f"引用量: {paper.get('citation_count', 'N/A')}"
+                + (f"（高影响力: {paper.get('influential_citation_count')}）" if paper.get('influential_citation_count') else "")
+                + f"\n发表venue: {paper.get('venue', '') or paper.get('journal', 'N/A')}\n"
                 f"摘要: {paper.get('summary','')}"
             )
             analysis = self.analyzer.run(paper_text)
