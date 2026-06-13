@@ -1,12 +1,16 @@
 """
 Semantic Scholar API 论文搜索工具
-免费 API，无需 key，返回引用量/venue/journal 等质量信号
+支持 API Key（免费申请，提限 10x），返回引用量/venue/journal 等质量信号
 """
+import os
 import time
 import requests
 from typing import Optional
 
-# 速率限制：每 5 分钟最多 95 次请求（上限 100，留 5 次余量）
+from dotenv import load_dotenv
+load_dotenv()
+
+# 速率限制
 _request_timestamps: list[float] = []
 
 BASE_URL = "https://api.semanticscholar.org/graph/v1"
@@ -15,16 +19,26 @@ DEFAULT_FIELDS = (
     "authors,venue,journal,externalIds,publicationTypes,openAccessPdf"
 )
 
+# 有 key: 1000 req/5min → 安全上限 950;  无 key: 100 req/5min → 安全上限 95
+_RATE_LIMIT_NO_KEY = 95
+_RATE_LIMIT_WITH_KEY = 950
+
+
+def _get_api_key() -> str:
+    return os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+
 
 def _rate_limit():
-    """确保不超过 S2 的速率限制（无 API key 时 100 req/5min）"""
+    """确保不超过 S2 速率限制"""
     global _request_timestamps
+    has_key = bool(_get_api_key())
+    limit = _RATE_LIMIT_WITH_KEY if has_key else _RATE_LIMIT_NO_KEY
+
     now = time.time()
-    # 清除 300 秒前的记录
     _request_timestamps = [t for t in _request_timestamps if now - t < 300]
-    if len(_request_timestamps) >= 95:
+    if len(_request_timestamps) >= limit:
         oldest = _request_timestamps[0]
-        wait = oldest + 300 - now + 0.5  # 等最老的过期再加 0.5 秒余量
+        wait = oldest + 300 - now + 0.5
         if wait > 0:
             time.sleep(wait)
     _request_timestamps.append(time.time())
@@ -38,14 +52,8 @@ def search_semantic_scholar(
     """
     搜索 Semantic Scholar 论文。
 
-    Args:
-        query: 搜索关键词
-        limit: 最大返回数 (1-100)
-        fields: 请求字段，默认包含 title/abstract/citation/venue 等
-
     Returns:
-        论文列表，每篇包含:
-        title, authors, year, summary (abstract), url, pdf_url,
+        论文列表。每篇包含 title, authors, year, summary, url, pdf_url,
         citation_count, influential_citation_count, venue, journal,
         doi, arxiv_id, source ("semantic_scholar")
     """
@@ -55,26 +63,30 @@ def search_semantic_scholar(
         "fields": fields or DEFAULT_FIELDS,
     }
 
+    api_key = _get_api_key()
+    headers = {"User-Agent": "PaperResearchAgent/2.0"}
+    if api_key:
+        headers["x-api-key"] = api_key
+
     try:
         _rate_limit()
         resp = requests.get(
             f"{BASE_URL}/paper/search",
             params=params,
-            headers={"User-Agent": "PaperResearchAgent/2.0"},
+            headers=headers,
             timeout=15,
         )
 
         if resp.status_code == 429:
-            # 被限流，等 5 秒重试一次，再失败就快速回退
-            time.sleep(5)
+            time.sleep(3)
             resp = requests.get(
                 f"{BASE_URL}/paper/search",
                 params=params,
-                headers={"User-Agent": "PaperResearchAgent/2.0"},
+                headers=headers,
                 timeout=10,
             )
             if resp.status_code == 429:
-                return []  # 不再死等，让 arxiv 顶上
+                return []
         elif resp.status_code >= 500:
             return []
 
@@ -91,19 +103,12 @@ def search_semantic_scholar(
         if not item.get("title"):
             continue
 
-        # 提取作者名
         authors = [a.get("name", "") for a in item.get("authors", []) if a.get("name")]
-
-        # 提取 arXiv ID 和 DOI
         ext_ids = item.get("externalIds") or {}
         arxiv_id = ext_ids.get("ArXiv", "")
         doi = ext_ids.get("DOI", "")
-
-        # 提取开放获取 PDF
         pdf_info = item.get("openAccessPdf") or {}
         pdf_url = pdf_info.get("url", "")
-
-        # venue 和 journal
         venue = item.get("venue") or ""
         journal_info = item.get("journal") or {}
         journal = journal_info.get("name", "") if journal_info else ""
